@@ -96,6 +96,23 @@ runs:
           INPUT_NAME="$(echo "$INPUT_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
         fi
 
+        # -- request OIDC token --
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_TOKEN. Add 'permissions: id-token: write' to the workflow."
+          exit 1
+        fi
+
+        OIDC_TOKEN="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL:-}&audience=${INPUT_OIDC_AUDIENCE:-https://neosrc.dev}" \
+          | jq -r '.value')"
+
+        if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
+          echo "::error::Failed to obtain OIDC token. Ensure 'id-token: write' permission is set."
+          exit 1
+        fi
+
+        echo "Obtained OIDC token (length: ${#OIDC_TOKEN})"
+
         # -- build JSON payload --
         JSON_PAYLOAD="$(jq -n \
           --arg provider       "${INPUT_PROVIDER:-github}" \
@@ -121,25 +138,11 @@ runs:
 
         RESPONSE_FILE="$(mktemp)"
 
-        # -- request OIDC token --
-        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-          echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_TOKEN. Add 'permissions: id-token: write' to the workflow."
-          exit 1
-        fi
-
-        OIDC_TOKEN="$(curl -s -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" \
-          "${ACTIONS_ID_TOKEN_REQUEST_URL:-}&audience=${INPUT_OIDC_AUDIENCE:-https://neosrc.dev}" \
-          | jq -r '.value')"
-
-        if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
-          echo "::error::Failed to obtain OIDC token. Ensure 'id-token: write' permission is set."
-          exit 1
-        fi
-
         # -- send request --
         API_URL="${INPUT_API_URL:-https://neosrc.dev/api/reports}"
 
-        HTTP_CODE="$(curl -s -o "$RESPONSE_FILE" -w "%{http_code}" \
+        echo "Sending report to $API_URL"
+        HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
           -L \
           --retry 3 \
           --retry-delay 5 \
