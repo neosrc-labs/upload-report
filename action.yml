@@ -41,6 +41,10 @@ inputs:
   data-file:
     description: 'Path to file containing report content'
     required: false
+  oidc-audience:
+    description: 'OIDC token audience (must match server config)'
+    required: false
+    default: 'https://neosrc.dev'
 
 runs:
   using: 'composite'
@@ -117,6 +121,16 @@ runs:
 
         RESPONSE_FILE="$(mktemp)"
 
+        # -- request OIDC token --
+        OIDC_TOKEN="$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${INPUT_OIDC_AUDIENCE:-https://neosrc.dev}" \
+          | jq -r '.value')"
+
+        if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then
+          echo "::error::Failed to obtain OIDC token. Ensure 'id-token: write' permission is set."
+          exit 1
+        fi
+
         # -- send request --
         API_URL="${INPUT_API_URL:-https://neosrc.dev/api/reports}"
 
@@ -127,6 +141,7 @@ runs:
           --retry-connrefused \
           -X POST "$API_URL" \
           -H "Content-Type: application/json" \
+          -H "Authorization: Bearer $OIDC_TOKEN" \
           -d "$JSON_PAYLOAD")"
 
         if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
@@ -151,5 +166,6 @@ runs:
         INPUT_TYPE: ${{ inputs.type }}
         INPUT_DATA: ${{ inputs.data }}
         INPUT_DATA_FILE: ${{ inputs.data-file }}
+        INPUT_OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
         GITHUB_EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
         GITHUB_EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
