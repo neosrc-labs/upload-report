@@ -1,0 +1,155 @@
+name: 'Upload Report'
+description: 'Upload a report to the PR reporting API'
+
+inputs:
+  api-url:
+    description: 'API endpoint URL'
+    required: false
+    default: 'https://neosrc.dev/api/reports'
+  provider:
+    description: 'Git provider'
+    required: false
+    default: 'github'
+  repository:
+    description: 'Repository (owner/repo)'
+    required: false
+    default: ${{ github.repository }}
+  pr-number:
+    description: 'PR number (auto-detected from event context if omitted)'
+    required: false
+  name:
+    description: 'Unique report name (defaults to lower-kebab-case of title)'
+    required: false
+  title:
+    description: 'Report title'
+    required: true
+  description:
+    description: 'Report description'
+    required: false
+    default: ''
+  commit-sha:
+    description: 'Commit SHA'
+    required: false
+    default: ${{ github.sha }}
+  type:
+    description: 'Report type'
+    required: false
+    default: 'markdown'
+  data:
+    description: 'Inline report content'
+    required: false
+  data-file:
+    description: 'Path to file containing report content'
+    required: false
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Upload report
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # -- resolve report content source --
+        HAS_DATA=false
+        HAS_FILE=false
+        if [ -n "${INPUT_DATA:-}" ]; then HAS_DATA=true; fi
+        if [ -n "${INPUT_DATA_FILE:-}" ]; then HAS_FILE=true; fi
+
+        if $HAS_DATA && $HAS_FILE; then
+          echo "::error::Provide exactly one of 'data' or 'data-file', not both."
+          exit 1
+        fi
+
+        if $HAS_FILE; then
+          if [ ! -f "$INPUT_DATA_FILE" ]; then
+            echo "::error::File not found: $INPUT_DATA_FILE"
+            exit 1
+          fi
+          INPUT_DATA="$(cat "$INPUT_DATA_FILE")"
+        fi
+
+        if [ -z "${INPUT_DATA:-}" ]; then
+          echo "::error::No report content provided. Use 'data' or 'data-file'."
+          exit 1
+        fi
+
+        # -- resolve pr-number --
+        PR_NUMBER="${INPUT_PR_NUMBER:-}"
+        if [ -z "$PR_NUMBER" ]; then
+          PR_NUMBER="${GITHUB_EVENT_PR_NUMBER:-}"
+        fi
+        if [ -z "$PR_NUMBER" ]; then
+          PR_NUMBER="${GITHUB_EVENT_ISSUE_NUMBER:-}"
+        fi
+        if [ -z "$PR_NUMBER" ]; then
+          echo "::error::Could not determine PR number. Pass it explicitly via 'pr-number' input."
+          exit 1
+        fi
+
+        # -- resolve name --
+        if [ -z "${INPUT_NAME:-}" ]; then
+          INPUT_NAME="$(echo "$INPUT_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
+        fi
+
+        # -- build JSON payload --
+        JSON_PAYLOAD="$(jq -n \
+          --arg provider       "${INPUT_PROVIDER:-github}" \
+          --arg repository     "${INPUT_REPOSITORY:-}" \
+          --argjson prNumber   "$PR_NUMBER" \
+          --arg name           "$INPUT_NAME" \
+          --arg title          "$INPUT_TITLE" \
+          --arg description    "${INPUT_DESCRIPTION:-}" \
+          --arg commitSha      "${INPUT_COMMIT_SHA:-}" \
+          --arg type           "${INPUT_TYPE:-markdown}" \
+          --arg data           "$INPUT_DATA" \
+          '{
+            provider:     $provider,
+            repository:   $repository,
+            prNumber:     $prNumber,
+            name:         $name,
+            title:        $title,
+            description:  $description,
+            commitSha:    $commitSha,
+            type:         $type,
+            data:         $data
+          }')"
+
+        RESPONSE_FILE="$(mktemp)"
+
+        # -- send request --
+        API_URL="${INPUT_API_URL:-https://neosrc.dev/api/reports}"
+
+        HTTP_CODE="$(curl -s -o "$RESPONSE_FILE" -w "%{http_code}" \
+          -L \
+          --retry 3 \
+          --retry-delay 5 \
+          --retry-connrefused \
+          -X POST "$API_URL" \
+          -H "Content-Type: application/json" \
+          -d "$JSON_PAYLOAD")"
+
+        if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+          echo "::error::Upload failed with HTTP $HTTP_CODE"
+          cat "$RESPONSE_FILE"
+          rm -f "$RESPONSE_FILE"
+          exit 1
+        fi
+
+        echo "Report uploaded successfully (HTTP $HTTP_CODE)"
+        cat "$RESPONSE_FILE"
+        rm -f "$RESPONSE_FILE"
+      env:
+        INPUT_API_URL: ${{ inputs.api-url }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_TITLE: ${{ inputs.title }}
+        INPUT_DESCRIPTION: ${{ inputs.description }}
+        INPUT_COMMIT_SHA: ${{ inputs.commit-sha }}
+        INPUT_TYPE: ${{ inputs.type }}
+        INPUT_DATA: ${{ inputs.data }}
+        INPUT_DATA_FILE: ${{ inputs.data-file }}
+        GITHUB_EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        GITHUB_EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
