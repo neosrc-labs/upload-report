@@ -1,7 +1,11 @@
 name: 'Upload Report'
-description: 'Upload a report to the PR reporting API'
+description: 'Upload, update, or remove a PR report'
 
 inputs:
+  action:
+    description: 'Action to perform: upload (default), mark-as-outdated, remove'
+    required: false
+    default: 'upload'
   api-url:
     description: 'API endpoint URL'
     required: false
@@ -18,11 +22,11 @@ inputs:
     description: 'PR number (auto-detected from event context if omitted)'
     required: false
   name:
-    description: 'Unique report name (defaults to lower-kebab-case of title)'
+    description: 'Unique report name (defaults to lower-kebab-case of title for upload)'
     required: false
   title:
-    description: 'Report title'
-    required: true
+    description: 'Report title (required for upload)'
+    required: false
   description:
     description: 'Report description'
     required: false
@@ -57,31 +61,9 @@ runs:
       run: |
         set -euo pipefail
 
-        # -- resolve report content source --
-        HAS_DATA=false
-        HAS_FILE=false
-        if [ -n "${INPUT_DATA:-}" ]; then HAS_DATA=true; fi
-        if [ -n "${INPUT_DATA_FILE:-}" ]; then HAS_FILE=true; fi
+        ACTION="${INPUT_ACTION:-upload}"
 
-        if $HAS_DATA && $HAS_FILE; then
-          echo "::error::Provide exactly one of 'data' or 'data-file', not both."
-          exit 1
-        fi
-
-        if $HAS_FILE; then
-          if [ ! -f "$INPUT_DATA_FILE" ]; then
-            echo "::error::File not found: $INPUT_DATA_FILE"
-            exit 1
-          fi
-          INPUT_DATA="$(cat "$INPUT_DATA_FILE")"
-        fi
-
-        if [ -z "${INPUT_DATA:-}" ]; then
-          echo "::error::No report content provided. Use 'data' or 'data-file'."
-          exit 1
-        fi
-
-        # -- resolve pr-number --
+        # -- resolve pr-number (needed by all actions) --
         PR_NUMBER="${INPUT_PR_NUMBER:-}"
         if [ -z "$PR_NUMBER" ]; then
           PR_NUMBER="${GITHUB_EVENT_PR_NUMBER:-}"
@@ -94,15 +76,7 @@ runs:
           exit 1
         fi
 
-        # -- resolve name --
-        if [ -z "${INPUT_NAME:-}" ]; then
-          INPUT_NAME="$(echo "$INPUT_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
-        fi
-
-        # -- resolve source URL --
-        SOURCE_URL="${INPUT_SOURCE_URL:-https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
-
-        # -- request OIDC token --
+        # -- request OIDC token (needed by all actions) --
         if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
           echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_TOKEN. Add 'permissions: id-token: write' to the workflow."
           exit 1
@@ -119,59 +93,146 @@ runs:
 
         echo "Obtained OIDC token (length: ${#OIDC_TOKEN})"
 
-        # -- build JSON payload --
-        JSON_PAYLOAD="$(jq -n \
-          --arg provider       "${INPUT_PROVIDER:-github}" \
-          --arg repository     "${INPUT_REPOSITORY:-}" \
-          --argjson prNumber   "$PR_NUMBER" \
-          --arg name           "$INPUT_NAME" \
-          --arg title          "$INPUT_TITLE" \
-          --arg description    "${INPUT_DESCRIPTION:-}" \
-          --arg commitSha      "${INPUT_COMMIT_SHA:-}" \
-          --arg sourceUrl      "$SOURCE_URL" \
-          --arg type           "${INPUT_TYPE:-markdown}" \
-          --arg data           "$INPUT_DATA" \
-          '{
-            provider:     $provider,
-            repository:   $repository,
-            prNumber:     $prNumber,
-            name:         $name,
-            title:        $title,
-            description:  $description,
-            commitSha:    $commitSha,
-            sourceUrl:    $sourceUrl,
-            type:         $type,
-            data:         $data
-          }')"
-
-        RESPONSE_FILE="$(mktemp)"
-
-        # -- send request --
         API_URL="${INPUT_API_URL:-https://neosrc.dev/api/reports}"
+        RESPONSE_FILE="$(mktemp)"
+        HTTP_CODE=
 
-        echo "Sending report to $API_URL"
-        HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
-          -L \
-          --location-trusted \
-          --retry 3 \
-          --retry-delay 5 \
-          --retry-connrefused \
-          -X PUT "$API_URL" \
-          -H "Content-Type: application/json" \
-          -H "Authorization: Bearer $OIDC_TOKEN" \
-          -d "$JSON_PAYLOAD")"
+        # -- resolve name --
+        if [ -z "${INPUT_NAME:-}" ]; then
+          if [ -z "${INPUT_TITLE:-}" ]; then
+            echo "::error::'name' or 'title' is required for this action."
+            exit 1
+          fi
+          INPUT_NAME="$(echo "$INPUT_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
+        fi
+
+        if [ "$ACTION" = "upload" ]; then
+          # -- resolve report content source --
+          HAS_DATA=false
+          HAS_FILE=false
+          if [ -n "${INPUT_DATA:-}" ]; then HAS_DATA=true; fi
+          if [ -n "${INPUT_DATA_FILE:-}" ]; then HAS_FILE=true; fi
+
+          if $HAS_DATA && $HAS_FILE; then
+            echo "::error::Provide exactly one of 'data' or 'data-file', not both."
+            exit 1
+          fi
+
+          if $HAS_FILE; then
+            if [ ! -f "$INPUT_DATA_FILE" ]; then
+              echo "::error::File not found: $INPUT_DATA_FILE"
+              exit 1
+            fi
+            INPUT_DATA="$(cat "$INPUT_DATA_FILE")"
+          fi
+
+          if [ -z "${INPUT_DATA:-}" ]; then
+            echo "::error::No report content provided. Use 'data' or 'data-file'."
+            exit 1
+          fi
+
+          if [ -z "${INPUT_TITLE:-}" ]; then
+            echo "::error::'title' is required for upload."
+            exit 1
+          fi
+
+          # -- resolve source URL --
+          SOURCE_URL="${INPUT_SOURCE_URL:-https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+
+          # -- build JSON payload --
+          JSON_PAYLOAD="$(jq -n \
+            --arg provider       "${INPUT_PROVIDER:-github}" \
+            --arg repository     "${INPUT_REPOSITORY:-}" \
+            --argjson prNumber   "$PR_NUMBER" \
+            --arg name           "$INPUT_NAME" \
+            --arg title          "$INPUT_TITLE" \
+            --arg description    "${INPUT_DESCRIPTION:-}" \
+            --arg commitSha      "${INPUT_COMMIT_SHA:-}" \
+            --arg sourceUrl      "$SOURCE_URL" \
+            --arg type           "${INPUT_TYPE:-markdown}" \
+            --arg data           "$INPUT_DATA" \
+            '{
+              provider:     $provider,
+              repository:   $repository,
+              prNumber:     $prNumber,
+              name:         $name,
+              title:        $title,
+              description:  $description,
+              commitSha:    $commitSha,
+              sourceUrl:    $sourceUrl,
+              type:         $type,
+              data:         $data
+            }')"
+
+          echo "Uploading report to $API_URL"
+          HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
+            -L --location-trusted --retry 3 --retry-delay 5 --retry-connrefused \
+            -X PUT "$API_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OIDC_TOKEN" \
+            -d "$JSON_PAYLOAD")"
+
+        elif [ "$ACTION" = "mark-as-outdated" ]; then
+          JSON_PAYLOAD="$(jq -n \
+            --arg provider       "${INPUT_PROVIDER:-github}" \
+            --arg repository     "${INPUT_REPOSITORY:-}" \
+            --argjson prNumber   "$PR_NUMBER" \
+            --arg name           "$INPUT_NAME" \
+            --arg state          "OUTDATED" \
+            '{
+              provider:   $provider,
+              repository: $repository,
+              prNumber:   $prNumber,
+              name:       $name,
+              state:      $state
+            }')"
+
+          echo "Marking report as outdated at $API_URL"
+          HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
+            -L --location-trusted --retry 3 --retry-delay 5 --retry-connrefused \
+            -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OIDC_TOKEN" \
+            -d "$JSON_PAYLOAD")"
+
+        elif [ "$ACTION" = "remove" ]; then
+          JSON_PAYLOAD="$(jq -n \
+            --arg provider       "${INPUT_PROVIDER:-github}" \
+            --arg repository     "${INPUT_REPOSITORY:-}" \
+            --argjson prNumber   "$PR_NUMBER" \
+            --arg name           "$INPUT_NAME" \
+            '{
+              provider:   $provider,
+              repository: $repository,
+              prNumber:   $prNumber,
+              name:       $name
+            }')"
+
+          echo "Removing report at $API_URL"
+          HTTP_CODE="$(curl -sS -o "$RESPONSE_FILE" -w "%{http_code}" \
+            -L --location-trusted --retry 3 --retry-delay 5 --retry-connrefused \
+            -X DELETE "$API_URL" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OIDC_TOKEN" \
+            -d "$JSON_PAYLOAD")"
+
+        else
+          echo "::error::Unknown action: $ACTION. Supported: upload, mark-as-outdated, remove."
+          exit 1
+        fi
 
         if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
-          echo "::error::Upload failed with HTTP $HTTP_CODE"
+          echo "::error::Request failed with HTTP $HTTP_CODE"
           cat "$RESPONSE_FILE"
           rm -f "$RESPONSE_FILE"
           exit 1
         fi
 
-        echo "Report uploaded successfully (HTTP $HTTP_CODE)"
+        echo "Report action completed successfully (HTTP $HTTP_CODE)"
         cat "$RESPONSE_FILE"
         rm -f "$RESPONSE_FILE"
       env:
+        INPUT_ACTION: ${{ inputs.action }}
         INPUT_API_URL: ${{ inputs.api-url }}
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
