@@ -41,6 +41,9 @@ inputs:
   data-file:
     description: 'Path to file containing report content'
     required: false
+  source-url:
+    description: 'Source URL for the report (defaults to the GitHub Actions run URL)'
+    required: false
   oidc-audience:
     description: 'OIDC token audience (must match server config)'
     required: false
@@ -96,6 +99,9 @@ runs:
           INPUT_NAME="$(echo "$INPUT_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')"
         fi
 
+        # -- resolve source URL --
+        SOURCE_URL="${INPUT_SOURCE_URL:-https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+
         # -- request OIDC token --
         if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
           echo "::error::Missing ACTIONS_ID_TOKEN_REQUEST_TOKEN. Add 'permissions: id-token: write' to the workflow."
@@ -122,6 +128,7 @@ runs:
           --arg title          "$INPUT_TITLE" \
           --arg description    "${INPUT_DESCRIPTION:-}" \
           --arg commitSha      "${INPUT_COMMIT_SHA:-}" \
+          --arg sourceUrl      "$SOURCE_URL" \
           --arg type           "${INPUT_TYPE:-markdown}" \
           --arg data           "$INPUT_DATA" \
           '{
@@ -132,6 +139,7 @@ runs:
             title:        $title,
             description:  $description,
             commitSha:    $commitSha,
+            sourceUrl:    $sourceUrl,
             type:         $type,
             data:         $data
           }')"
@@ -175,6 +183,9 @@ runs:
         INPUT_TYPE: ${{ inputs.type }}
         INPUT_DATA: ${{ inputs.data }}
         INPUT_DATA_FILE: ${{ inputs.data-file }}
+        INPUT_SOURCE_URL: ${{ inputs.source-url }}
         INPUT_OIDC_AUDIENCE: ${{ inputs.oidc-audience }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
         GITHUB_EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
         GITHUB_EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
