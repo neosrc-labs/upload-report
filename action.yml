@@ -34,7 +34,7 @@ inputs:
   commit-sha:
     description: 'Commit SHA'
     required: false
-    default: ${{ github.sha }}
+    default: ${{ github.event.pull_request.head.sha }}
   type:
     description: 'Report type'
     required: false
